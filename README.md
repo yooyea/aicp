@@ -1,10 +1,9 @@
----
 
 # AI-Driven Frontend Interaction Capability Enhancement Package
 
 > A unified solution to empower frontend UI components with AI interaction capabilities through build-time analysis, runtime injection, and a standardized protocol — focusing on Vue + Element Plus.
 
----
+
 
 ## Table of Contents
 
