@@ -140,6 +140,11 @@ interface AICapability {
   children: AICapability[];
 }
 
+/**
+ * AI Capability Description Generator Plugin
+ * Used for static analysis of Vue components at build time,
+ * generating AI capability description JSON
+ */
 export default function createAICapabilityPlugin(options = { enableDevMode: true }): Plugin {
   const aiCapabilityMap = new Map<string, AICapability>();
   const aiCapabilityTree: AICapability[] = [];
@@ -167,7 +172,120 @@ export default function createAICapabilityPlugin(options = { enableDevMode: true
   };
 }
 
-// ... (Traverse AST, find capabilities, generate JSON, write to /public) ...
+function traverseAST(
+  nodes: any[], 
+  filePath: string, 
+  capabilityMap: Map<string, AICapability>, 
+  capabilityTree: AICapability[], 
+  parentId: string | null = null
+) {
+  if (!nodes) return;
+  
+  for (const node of nodes) {
+    if (node.type !== 1) continue; // Only process ELEMENT nodes
+    
+    const isElComponent = node.tag?.startsWith('el-') || ['ElButton', 'ElInput'].includes(node.tag);
+    const isVxeComponent = node.tag?.startsWith('vxe-') || ['VxeTable', 'VxeButton'].includes(node.tag);
+    const aiIdProp = node.props?.find(p => p.name === 'data-ai-id');
+    const hasAiId = !!aiIdProp;
+    
+    if (isElComponent || isVxeComponent || hasAiId) {
+      const customId = hasAiId ? aiIdProp.value.content : null;
+      const componentId = customId || `${filePath.replace(/\//g, '_')}_${node.tag}_${Date.now().toString(36)}`;
+      
+      const componentProps: Record<string, any> = {};
+      const events: Record<string, boolean> = {};
+      let modelValue: string | null = null;
+      
+      if (node.props) {
+        for (const prop of node.props) {
+          if (prop.type === 6) { // ATTRIBUTE
+            componentProps[prop.name] = prop.value?.content || true;
+          } else if (prop.type === 7 && prop.name === 'on') { // EVENT
+            events[prop.arg.content] = true;
+          } else if (prop.type === 7 && prop.name === 'model') { // MODEL binding
+            modelValue = prop.arg?.content || 'modelValue';
+          }
+        }
+      }
+      
+      const capability: AICapability = {
+        id: componentId,
+        type: node.tag,
+        filePath,
+        modelPath: modelValue,
+        actions: Object.keys(events),
+        props: componentProps,
+        children: []
+      };
+      
+      capabilityMap.set(componentId, capability);
+      
+      if (parentId) {
+        const parent = findCapabilityById(capabilityTree, parentId);
+        if (parent) {
+          parent.children.push(capability);
+        } else {
+          capabilityTree.push(capability);
+        }
+      } else {
+        capabilityTree.push(capability);
+      }
+      
+      if (node.children?.length) {
+        traverseAST(node.children, filePath, capabilityMap, capabilityTree, componentId);
+      }
+    } else if (node.children?.length) {
+      traverseAST(node.children, filePath, capabilityMap, capabilityTree, parentId);
+    }
+  }
+}
+
+function findCapabilityById(tree: AICapability[], id: string): AICapability | null {
+  for (const node of tree) {
+    if (node.id === id) return node;
+    if (node.children?.length) {
+      const found = findCapabilityById(node.children, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+async function generateAICapabilities(config: ResolvedConfig, aiCapabilityMap: Map<string, AICapability>, aiCapabilityTree: AICapability[]) {
+  console.log('Starting AI capability description JSON generation...');
+  aiCapabilityMap.clear();
+  aiCapabilityTree.length = 0;
+  
+  const vueFiles = globModule.sync('src/**/*.vue', { cwd: config.root });
+  for (const file of vueFiles) {
+    const filePath = path.join(config.root, file);
+    const source = fs.readFileSync(filePath, 'utf-8');
+    try {
+      const { descriptor } = parse(source);
+      if (!descriptor.template) continue;
+      const templateAST = parseTemplate(descriptor.template.content);
+      traverseAST(templateAST.children, file, aiCapabilityMap, aiCapabilityTree);
+    } catch (err) {
+      console.error(`Failed to parse file ${file}:`, err);
+    }
+  }
+  
+  const aiCapabilityJSON = JSON.stringify({
+    tree: aiCapabilityTree,
+    map: Object.fromEntries(aiCapabilityMap)
+  }, null, 2);
+  
+  const publicDir = path.join(config.root, 'public');
+  if (!fs.existsSync(publicDir)) {
+    fs.mkdirSync(publicDir, { recursive: true });
+  }
+  
+  fs.writeFileSync(path.join(publicDir, 'ai-capabilities.json'), aiCapabilityJSON);
+  
+  console.log('AI capability description JSON generated successfully at public/ai-capabilities.json');
+}
+
 ```
 
 *(See full source in the `docs/` folder or source code.)*
